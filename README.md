@@ -28,19 +28,19 @@ The priority is Mette's morning view of yesterday. Daily batch processing is suf
 
    Anaconda is just one way to run python code, but any local instance with the required packages will work.
 
-4. Run the loader. This example loads yesterday plus its preceding 28 days for the 13 October 2026 demonstration:
+4. Run the loader. This example loads yesterday plus its preceding 28 days
 
    ```text
-   python ingest.py --from-date 2026-09-14 --to-date 2026-10-12
+   python ingest.py --from-date 2026-09-15 --to-date 2026-10-13
    ```
 
    Update the explicit dates for later runs. `--server` overrides the default `localhost\SQLEXPRESS`. Database name, driver and API base URL are fixed in the implementation.
 
-5. Supply credentials at the prompts, or set `VETONE_CLIENT_ID` and `VETONE_CLIENT_SECRET` in the process environment. The local fallback secret prompt is visible because hidden terminal input was unreliable during development. No credentials belong in source control or submission logs.
+5. Supply credentials at the prompts, or set `VETONE_CLIENT_ID` and `VETONE_CLIENT_SECRET` to the correct values.
 
-6. Run `verify.sql`; adjust its fixed example dates to match the load. Open the Power BI report, connect its SQL source to your server and `Nordvet`, and select **Refresh**. Power BI uses Import: a pipeline run does not refresh the report's cached data. Automatic scheduling is not implemented.
+6. Run `verify.sql`. Adjust its fixed example dates to match the load. Open the Power BI report, connect its SQL source to your server and `Nordvet`, and select **Refresh**. Power BI uses Import: a pipeline run does not refresh the report's cached data. Automatic scheduling is not implemented.
 
-**Files:** `ingest.py` is the loader; `setup.sql` defines storage; `reporting.sql` defines `dbo.v_clinic_day`; `verify.sql` contains manual checks; `test_loader.py` contains simulated tests. `check_database.py` tests the local connection. `inspect_api.py` reads one sample page for a fixed date. `inspect_sync.py` inspects deletion responses and accepts date arguments. Inspection scripts do not load SQL; sample output can contain source identifiers and should not be submitted as a data dump. The supplied report is `Nordvet(1).pbix`. Import-mode PBIX files contain cached report data; a PBIT template omits that cache.
+**Files:** `ingest.py` is the loader, `setup.sql` defines storage, `reporting.sql` defines `dbo.v_clinic_day`, `verify.sql` contains manual checks. The supplied report is `Nordvet.pbix`. 
 
 ## Python implementation: choices and assumptions
 
@@ -99,16 +99,13 @@ Status meaning and the denominator are explicit business assumptions: cancellati
 
 ## Report interpretation and deliberate exclusions
 
-Power BI builds on the SQL view. The supplied PBIX has one overview page; capacity prioritisation, baseline comparison and economic scenarios are extensions demonstrated in screenshots and should be saved in the final report if included in the submission. Their design rules are: aggregate rates divide sums; the baseline covers the preceding 28 loaded days, excludes the reporting day, and suppresses the difference when either period has pending outcomes. These are conservative reporting rules, not statistical significance testing. Loaded history is not proof of resolved outcomes. Display freshness, selected dates and missing coverage separately. Published relative date filters use UTC; a production morning report should explicitly define its business timezone.
+Power BI builds on the SQL view. It consists of four pages with each their own intended use. The first page shows an immediate overview of activities from the previous day, that allows an overview of how many appointments were completed, canceled or had no-shows (the map here is incomplete due to misplacement of dots from the city names). The second gives an overview of the 10 clinics with the most lost time due to no-shows which is assumed to correlate with  lost revenue. The third page compares no-show rates to a 28-day baseline giving an indication of irregular behaviour and the fourth page presents an economic scenario.. The economic scenario uses **assumed contribution margin per recovered hour × assumed recovered share × scheduled no-show hours**, less intervention cost. Costs must match selected dates/clinics; break-even share is cost divided by hours times hourly contribution, which gives a rough idea of how many hours must be covered for an intervention to be valuable. All scenario amounts use DKK, including Swedish clinics under a common illustrative assumption; no exchange conversion or actual pricing is implemented.
 
-Scheduled no-show hours do not establish idle time, lost revenue or avoidable salary cost. The economic scenario uses **assumed contribution margin per recovered hour × assumed recovered share × scheduled no-show hours**, less intervention cost. Costs must match selected dates/clinics; break-even share is cost divided by hours times hourly contribution. All scenario amounts use DKK, including Swedish clinics under a common illustrative assumption; no exchange conversion or actual pricing is implemented.
-
-City-name geocoding misplaced clinics. The map is a prototype, not a validated basis for operational decisions; a future clinic-ID/location mapping should use verified coordinates. Prediction, causal explanations, reminder delivery, intervention-effect measurement, actual financial losses and automated business conclusions are outside this slice.
 
 ## Validation and what would change at Nordvet
 
-Run `python -m unittest test_loader -v`. The six simulated tests passed during this review with HTTP/ODBC dependency stand-ins; native SQL Server and live API behaviour were not exercised. The tests cover local-date/deletion preservation, incremental query parameters, pagination/duplicate handling, ignored-filter rejection, and simulated commit/rollback. They mock API/database behaviour; they do **not** establish live endpoint completeness, execute SQL Server constraints, or validate DAX/report interactions. Use `verify.sql` for source-category/count checks, and compare SQL totals with the same Power BI date/activity filters. Counts are live, so sample figures are not fixed acceptance criteria.
+Use `verify.sql` for source-category/count checks, and compare SQL totals with the same Power BI date/activity filters. Counts are live, so sample figures are not fixed acceptance criteria.
 
-For Nordvet, reuse existing infrastructure where possible; otherwise propose a daily scheduled Python Azure Function, Azure SQL Database and Power BI Service. Before deployment: replace the local Windows-authentication connection with an appropriate Azure connection/identity, validate database certificates (`TrustServerCertificate=yes` is only the local-demo shortcut), store the API secret securely, configure scheduling/report refresh, and alert on failures/stale coverage. Inspect their Power BI licences and network setup; Microsoft 365 alone does not establish report-sharing entitlement. Assess database, compute and reporting costs against the expected benefit rather than assume a budget.
+For Nordvet use a daily scheduled Python Azure Function, Azure SQL Database and Power BI Service. Before deployment we could replace the local Windows-authentication connection with an appropriate Azure connection/identity, validate database certificates (`TrustServerCertificate=yes` is only the local-demo shortcut), store the API secret securely, configure scheduling/report refresh, and alert on failures/stale coverage. database, compute and reporting costs should be assesed against the expected benefit or follow a budget.
 
-This implementation has no scheduler, persisted failure log, alerts, history/audit snapshots, deployment automation or production access-control configuration. Those are explicit next steps for an ongoing client service; they are not required to run the local demonstration.
+This implementation has no scheduler, persisted failure log, alerts, history/audit snapshots, deployment automation or production access-control configuration. Those are explicit next steps for an ongoing client service.
