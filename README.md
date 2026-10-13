@@ -4,9 +4,9 @@ A local demonstration of **VetOne API → Python → SQL Server → Power BI**. 
 
 The priority is Mette's morning view of yesterday. Daily batch processing is sufficient for that decision; a real-time requirement would need a specific operational use case. SQL Server fits Nordvet's SQL/Power BI skills and offers a route to Azure SQL. Python handles the vendor API and timezone conversion; SQL defines the reporting rules; Power BI presents the results. This is a first slice, not a deployed production platform.
 
-## Run locally
+## How to run locally
 
-**Prerequisites:** Windows, Anaconda/Conda with Python 3.12, SQL Server Express or another compatible SQL Server instance, SSMS, Microsoft ODBC Driver 18 for SQL Server, and Power BI Desktop. The Windows account needs permissions to create the objects and read/write the database. `pyodbc` does not install the native ODBC driver.
+**Prerequisites:** SQL Server Express or another compatible SQL Server instance, SSMS, Microsoft ODBC Driver 18 for SQL Server, and Power BI Desktop. The Windows account needs permissions to create the objects and read/write the database.
 
 1. Create the database in SSMS if it does not exist:
 
@@ -16,17 +16,17 @@ The priority is Mette's morning view of yesterday. Daily batch processing is suf
    GO
    ```
 
-2. Run `setup.sql`, then `reporting(1).sql` in SSMS. Both target `Nordvet`. The reporting filename includes `(1)` in the supplied project. Setup creates missing tables/additional columns without deleting existing data; the reporting script replaces the view and runs example queries.
+2. Run `setup.sql`, then `reporting.sql` in SSMS. Both target `Nordvet`. Setup creates missing tables/additional columns without deleting existing data; the reporting script replaces the view and runs example queries.
 
 3. In Anaconda Prompt, from the project directory:
 
    ```text
    conda create -n nordvet python=3.12 pip -y
    conda activate nordvet
-   python -m pip install -r requirements.txt
+   pip install -r requirements.txt
    ```
 
-   Skip environment creation if `nordvet` already exists. Dependencies have version ranges rather than an exact lockfile.
+   Anaconda is just one way to run python code, but any local instance with the required packages will work.
 
 4. Run the loader. This example loads yesterday plus its preceding 28 days for the 13 October 2026 demonstration:
 
@@ -40,7 +40,7 @@ The priority is Mette's morning view of yesterday. Daily batch processing is suf
 
 6. Run `verify.sql`; adjust its fixed example dates to match the load. Open the Power BI report, connect its SQL source to your server and `Nordvet`, and select **Refresh**. Power BI uses Import: a pipeline run does not refresh the report's cached data. Automatic scheduling is not implemented.
 
-**Files:** `ingest.py` is the loader; `setup.sql` defines storage; `reporting(1).sql` defines `dbo.v_clinic_day`; `verify.sql` contains manual checks; `test_loader.py` contains simulated tests. `check_database.py` tests the local connection. `inspect_api.py` reads one sample page for a fixed date. `inspect_sync(1).py` inspects deletion responses and accepts date arguments. Inspection scripts do not load SQL; sample output can contain source identifiers and should not be submitted as a data dump. The supplied report is `Nordvet(1).pbix`. Import-mode PBIX files contain cached report data; a PBIT template omits that cache.
+**Files:** `ingest.py` is the loader; `setup.sql` defines storage; `reporting.sql` defines `dbo.v_clinic_day`; `verify.sql` contains manual checks; `test_loader.py` contains simulated tests. `check_database.py` tests the local connection. `inspect_api.py` reads one sample page for a fixed date. `inspect_sync.py` inspects deletion responses and accepts date arguments. Inspection scripts do not load SQL; sample output can contain source identifiers and should not be submitted as a data dump. The supplied report is `Nordvet(1).pbix`. Import-mode PBIX files contain cached report data; a PBIT template omits that cache.
 
 ## Python implementation: choices and assumptions
 
@@ -48,7 +48,7 @@ The priority is Mette's morning view of yesterday. Daily batch processing is suf
 
 Each run fetches all clinics, re-fetches **every appointment page in the explicit date range**, then fetches changes using `updated_since` without appointment-date filters. Both appointment queries use `include_deleted=true`. These are read operations; the loader does not modify VetOne.
 
-- `from`/`to` are treated as inclusive scheduled local-date bounds; a single-day API test supports this. Records outside the requested local dates fail the bounded load.
+- `from`/`to` are treated as inclusive scheduled local-date bounds (verified). Records outside the requested local dates fail the bounded load.
 - The saved watermark is the successful run's **start time**, in UTC. The next run starts five minutes earlier. Data, successful-run metadata and the watermark commit together; a failure rolls back all three. This replays changes occurring during extraction, subject to vendor delivery semantics.
 - Without a checkpoint, replay starts five minutes before the earliest existing successful run, or this run's start for a fresh database. Older historical coverage comes from the explicit date-range extraction, not this bootstrap replay.
 - The five-minute overlap is a pragmatic allowance for boundaries and modest clock/visibility differences, not a guarantee against arbitrary publication delays. Machine and vendor clocks are assumed sufficiently aligned.

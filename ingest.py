@@ -104,6 +104,10 @@ def appointment_row(record, clinics, start=None, end=None):
 
 
 def upsert(cursor, table, columns, values, timestamp_columns=(), date_columns=(), newer_only=False):
+    """
+    Function that updates a row or inserts a new one if it doesn't exist. Also prevents an older
+    source version from overwriting a newer stored version.
+    """
     # Table/column names are constants supplied by this program, never API input.
     expressions = ["CAST(? AS datetimeoffset(7))" if c in timestamp_columns
                    else "CAST(? AS date)" if c in date_columns else "?" for c in columns]
@@ -160,18 +164,25 @@ def main():
         print(f"Incremental replay starts at {since.isoformat()}")
 
         api.authenticate()
+        # Get initial data and check for duplicate clinics
         clinic_records = api.get("/v1/clinics")["data"]
         clinics = {c["id"]: c for c in clinic_records}
         if len(clinics) != len(clinic_records):
             raise ValueError("Duplicate clinic IDs")
+
+        # Find the appointments scheduled within the period reported
         print("Refreshing selected appointment dates, including deleted records...")
         appointments, pages, duplicates = api.appointments(args.from_date, args.to_date)
         rows = [appointment_row(a, clinics, args.from_date, args.to_date) for a in appointments]
+        
+        # Check if any records have been updated since the previous run
         print("Fetching updates across appointment dates...")
         changes, change_pages, change_duplicates = api.appointments(updated_since=since)
+        # Convert changed appointments to tuples matching the SQL columns
         changed_rows = [appointment_row(a, clinics) for a in changes]
         # Persist the bounded snapshot, then changes. Version comparison prevents regression.
         for c in clinic_records:
+            # If clinic exists update its attributes otherwise insert a new clinic
             upsert(cursor, "clinic",
                    ["clinic_id", "name", "city", "country", "timezone", "active", "opened_on"],
                    (c["id"], c["name"], c.get("city"), c["country"], c["timezone"],
@@ -180,6 +191,7 @@ def main():
                    "appointment_local_date", "duration_minutes", "status", "created_at",
                    "deleted_at", "cancelled_at", "updated_at"]
         for row in [*rows, *changed_rows]:
+            # Insert rows. Update only if updated_at is equal to or newer than the stored timestamp.
             upsert(cursor, "appointment", columns, row,
                    timestamp_columns=["scheduled_at", "created_at", "deleted_at", "cancelled_at", "updated_at"],
                    date_columns=["appointment_local_date"], newer_only=True)
