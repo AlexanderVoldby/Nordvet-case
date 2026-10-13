@@ -1,101 +1,114 @@
-# Nordvet: SQL Server + Power BI
+# Nordvet: a first no-show reporting slice
 
-## Run locally (Windows)
+A local demonstration of **VetOne API → Python → SQL Server → Power BI**. It provides clinic-level results for a selected appointment date, including no-shows, scheduled time associated with them, and outstanding outcomes. Results can change as clinics complete or correct their records.
 
-Requires the existing Nordvet database, ODBC Driver 18 and Python 3.12.
+The priority is Mette's morning view of yesterday. Daily batch processing is sufficient for that decision; a real-time requirement would need a specific operational use case. SQL Server fits Nordvet's SQL/Power BI skills and offers a route to Azure SQL. Python handles the vendor API and timezone conversion; SQL defines the reporting rules; Power BI presents the results. This is a first slice, not a deployed production platform.
 
-1. Run setup.sql in SSMS: creates missing tables and migrates existing tables.
-2. Run reporting.sql in SSMS: creates or replaces dbo.v_clinic_day.
+## Run locally
+
+**Prerequisites:** Windows, Anaconda/Conda with Python 3.12, SQL Server Express or another compatible SQL Server instance, SSMS, Microsoft ODBC Driver 18 for SQL Server, and Power BI Desktop. The Windows account needs permissions to create the objects and read/write the database. `pyodbc` does not install the native ODBC driver.
+
+1. Create the database in SSMS if it does not exist:
+
+   ```sql
+   IF DB_ID(N'Nordvet') IS NULL
+       CREATE DATABASE Nordvet;
+   GO
+   ```
+
+2. Run `setup.sql`, then `reporting(1).sql` in SSMS. Both target `Nordvet`. The reporting filename includes `(1)` in the supplied project. Setup creates missing tables/additional columns without deleting existing data; the reporting script replaces the view and runs example queries.
+
 3. In Anaconda Prompt, from the project directory:
 
-```text
-conda activate nordvet
-python -m pip install -r requirements.txt
-python ingest.py --from-date 2026-10-05 --to-date 2026-10-11
-```
+   ```text
+   conda create -n nordvet python=3.12 pip -y
+   conda activate nordvet
+   python -m pip install -r requirements.txt
+   ```
 
-Optional --server overrides localhost\SQLEXPRESS. VETONE_CLIENT_ID and
-VETONE_CLIENT_SECRET environment variables replace interactive prompts. The
-local secret prompt is visible because hidden entry did not work in the user's
-terminal. Credentials, virtual environments and data dumps are not included.
-Run verify.sql, then Refresh in Power BI Desktop.
+   Skip environment creation if `nordvet` already exists. Dependencies have version ranges rather than an exact lockfile.
 
-## Synchronisation decisions
+4. Run the loader. This example loads yesterday plus its preceding 28 days for the 13 October 2026 demonstration:
 
-Every run fully refreshes the supplied local-date range with include_deleted=true,
-then fetches updated_since changes without appointment-date filters. On the first
-upgraded run it replays changes from five minutes before the original loader's
-first successful start (or this run's start for an empty database). Later runs
-replay from five minutes before the saved watermark. The watermark is the current
-run's START time; data and watermark commit together. Failure rolls back both.
-Changes during extraction are replayed on the next run. The overlap handles
-boundary duplicates and modest clock/visibility differences, not arbitrarily
-late vendor change publication.
+   ```text
+   python ingest.py --from-date 2026-09-14 --to-date 2026-10-12
+   ```
 
-Pagination uses opaque cursors and preserves the query parameters. GETs retry
-429 and transient 5xx responses and honour Retry-After. A 401 triggers one token
-renewal. Duplicate appointment IDs use the newest updated_at; conflicting equal
-versions within one paginated extraction fail. A SQL application lock serialises
-runs. Row-by-row parameterised upserts reject older stored versions. The SQL
-transaction includes extraction, to protect the checkpoint from concurrent runs;
-this is acceptable for the laptop slice but should be shortened if loads grow.
+   Update the explicit dates for later runs. `--server` overrides the default `localhost\SQLEXPRESS`. Database name, driver and API base URL are fixed in the implementation.
 
-Source statuses are preserved. deleted_at is independent of status: deleted
-appointments remain in SQL but are excluded from all operational metrics. Missing
-deleted_at/cancelled_at fields mean NULL. These are full-record responses, not
-partial patches; a later full-record restoration clears deleted_at. This and
-updated_at being the source version timestamp are assumptions to verify.
-Patient references are omitted. All clinics, including inactive clinics, are
-retained. Source offsets are preserved; local dates use clinic IANA timezones.
-Python tzdata supports Windows. Single-day testing supports inclusive date bounds.
-No appointments on a date does not establish clinic opening hours.
+5. Supply credentials at the prompts, or set `VETONE_CLIENT_ID` and `VETONE_CLIENT_SECRET` in the process environment. The local fallback secret prompt is visible because hidden terminal input was unreliable during development. No credentials belong in source control or submission logs.
 
-## Reporting
+6. Run `verify.sql`; adjust its fixed example dates to match the load. Open the Power BI report, connect its SQL source to your server and `Nordvet`, and select **Refresh**. Power BI uses Import: a pipeline run does not refresh the report's cached data. Automatic scheduling is not implemented.
 
-One row per clinic per fully extracted local date, including zero-appointment
-rows. Overlapping successful extraction ranges do not duplicate daily counts.
-Dates before clinic opening are excluded. The view uses current clinic activity,
-not a historical active flag. Date expansion supports up to 100,000 days per run.
+**Files:** `ingest.py` is the loader; `setup.sql` defines storage; `reporting(1).sql` defines `dbo.v_clinic_day`; `verify.sql` contains manual checks; `test_loader.py` contains simulated tests. `check_database.py` tests the local connection. `inspect_api.py` reads one sample page for a fixed date. `inspect_sync(1).py` inspects deletion responses and accepts date arguments. Inspection scripts do not load SQL; sample output can contain source identifiers and should not be submitted as a data dump. The supplied report is `Nordvet(1).pbix`. Import-mode PBIX files contain cached report data; a PBIT template omits that cache.
 
-No-show rate = no_show / (completed + no_show). Cancelled, deleted and booked
-appointments are excluded from that denominator. Past booked appointments are
-unresolved; other statuses are surfaced separately. Aggregate rates divide sums,
-never average percentages. A zero denominator yields NULL/blank. No-show minutes
-are scheduled capacity associated with no-shows, not proven monetary loss.
-Missing no-show durations are counted separately. No price fields were observed.
-last_loaded_at_utc is the last full date extraction, not outcome finalisation.
+## Python implementation: choices and assumptions
 
-In Power BI Import dbo.v_clinic_day; after each successful pipeline run, refresh
-Power BI's separate imported copy. Metrics can change due to late source updates.
+### Extraction and checkpoints
 
-## Remaining assumptions and exclusions
+Each run fetches all clinics, re-fetches **every appointment page in the explicit date range**, then fetches changes using `updated_since` without appointment-date filters. Both appointment queries use `include_deleted=true`. These are read operations; the loader does not modify VetOne.
 
-The updated_since endpoint is assumed to return all appointment dates when that
-filter is supplied, with deleted records retained and updated_at advanced on
-changes. Verify this against an older appointment update before claiming full
-historical change coverage. Cursor snapshot guarantees, deletion retention,
-clock skew and arbitrary visibility delays are unverified. A complete historical
-backfill is not implemented: only explicitly extracted dates have coverage, even
-if incremental changes introduce records on other dates. Periodically re-fetch
-the last 30 days and reconcile older dates if vendor change delivery is unreliable.
-Tombstones are assumed to contain the full appointment fields observed in the
-sample; incomplete tombstones fail the load rather than being silently skipped.
-This small implementation holds each extraction in memory. Bulk staging,
-alerting, historical clinic dimensions and revenue estimates are omitted.
-Failure details are terminal errors; load_run records only successes.
+- `from`/`to` are treated as inclusive scheduled local-date bounds; a single-day API test supports this. Records outside the requested local dates fail the bounded load.
+- The saved watermark is the successful run's **start time**, in UTC. The next run starts five minutes earlier. Data, successful-run metadata and the watermark commit together; a failure rolls back all three. This replays changes occurring during extraction, subject to vendor delivery semantics.
+- Without a checkpoint, replay starts five minutes before the earliest existing successful run, or this run's start for a fresh database. Older historical coverage comes from the explicit date-range extraction, not this bootstrap replay.
+- The five-minute overlap is a pragmatic allowance for boundaries and modest clock/visibility differences, not a guarantee against arbitrary publication delays. Machine and vendor clocks are assumed sufficiently aligned.
+- `updated_since` is assumed to cover all scheduled dates when supplied. The API's implicit seven-day window, deletion retention and cursor snapshot guarantees are **not fully verified**. Rejecting a returned timestamp older than the filter detects some violations, but cannot detect omitted records.
 
-## Nordvet deployment
+Pagination preserves filters and treats cursors as opaque. Repeated/invalid nonempty cursors fail the run. Records are deduplicated by ID: the newest `updated_at` wins; different records with equal timestamps within one extraction fail. SQL updates accept equal timestamps but reject older versions; conflicting equal versions across separate extractions are not detected.
 
-Proposed: daily scheduled Azure Function, Azure SQL Database, Power BI Service.
-Keep the API secret outside code, use managed identity for Azure SQL where
-supported, and alert on ingestion/refresh failures. Refresh the report after
-successful ingestion. Verify existing Power BI licences and network access.
-Daily batch serves the morning requirement; real-time requires a concrete use case.
+Re-fetching is an **upsert refresh**, not replacement of the date range. Absence is not interpreted as deletion. Hard-deleted records, expired tombstones or a missed rescheduling update can leave stale rows. Periodic reconciliation would be needed if the vendor's change feed is unreliable; it is not scheduled here.
 
-## Validation
+### Time, records and failures
 
-Six simulated tests passed for timezone/deletion preservation, pagination, incremental query parameters, ignored-filter detection and transaction commit/rollback. Run `python -m unittest test_loader -v`. SQL Server and
-live API verification run on the candidate's Windows laptop. The observed week
-contained 4,623 undeleted appointments and 61 additional soft-deleted records;
-8 additional deleted records retained status no_show. The operational report
-must exclude those deleted no-shows. Counts may change as the source is live.
+Reporting date comes from `scheduled_at` converted to the clinic's IANA timezone, **not** `created_at`, `updated_at` or ingestion time. Timestamp strings must include an offset; naive timestamps fail. `tzdata` supplies timezone rules on Windows. Source offsets are retained through ISO-string parameters and explicit SQL casts. Late outcomes update their original scheduled day; a reschedule updates the same row's date. No original booking/version history is retained.
+
+Records are assumed to be full current representations with stable IDs, including deleted records. Missing optional `deleted_at`/`cancelled_at` means NULL, not "leave unchanged". A newer restored record can therefore clear a deletion. Every appointment must reference a returned clinic; required-field, timestamp or foreign-key failures stop the load. Payload validation is targeted, not a full schema/data-quality framework. Patient references are deliberately omitted from storage.
+
+The HTTP adapter allows up to three retries with backoff and `Retry-After` support. Status/read retries are restricted to GET, including selected transient statuses (429, 500, 502, 503, 504); connection retries can also apply to token requests. Connect/read timeouts are 10/60 seconds; the read timeout accommodates API cold starts. A GET 401 triggers one token renewal and another attempt. Token POST requests have no configured status/read retries. Read timeouts and server-directed waits do not form an overall run-duration limit.
+
+A transaction-owned SQL application lock rejects another loader immediately. The transaction includes network extraction to protect checkpoint consistency. In-memory extraction and row-by-row writes are intentionally simple for this slice; long transactions, memory use and round trips limit scalability.
+
+## SQL implementation and metric definitions
+
+| Object | Grain / purpose |
+|---|---|
+| `dbo.clinic` | One current row per clinic ID; includes inactive clinics |
+| `dbo.appointment` | One current row per appointment ID; preserves soft-deleted records |
+| `dbo.load_run` | One successful run; requested range, counts and timestamps |
+| `dbo.sync_state` | One appointment-source watermark |
+| `dbo.v_clinic_day` | One clinic per explicitly loaded local date, on/after its opening date |
+
+Primary keys prevent duplicate stored IDs; the clinic foreign key enforces references. `nvarchar` preserves Danish/Swedish characters, `bit` stores activity, `date` stores the reporting date, and `datetimeoffset` retains source offsets. Scheduled timestamps use whole-second precision; other timestamps allow fractional seconds. SQL uses parameterised values and code-controlled identifiers. There is no raw-payload store or additional reporting index strategy.
+
+The view expands successful run ranges into dates, merges overlapping runs, crosses dates with clinics and left-joins appointment aggregates. Thus a covered date with zero appointments remains visible, while a date without full extraction coverage is absent. Incremental records outside covered dates are stored but do not imply complete daily reporting coverage. Date expansion supports 100,000 days per run. Current clinic attributes/activity are applied to historical dates; historical clinic dimensions and opening hours are not modelled.
+
+**All operational metrics exclude `deleted_at IS NOT NULL`, regardless of retained status.**
+
+| Metric | Definition |
+|---|---|
+| Appointments | All nondeleted appointments, including cancellations and booked records |
+| Eligible outcomes | `completed + no_show` |
+| Recorded no-show rate | `no_show / eligible`; zero denominator returns NULL |
+| Unresolved | `booked` with scheduled time before the SQL Server's current time |
+| Other statuses | Nondeleted records outside the four recognised statuses |
+| No-show minutes | Scheduled duration for `no_show`; NULL duration contributes zero and is counted separately |
+
+Status meaning and the denominator are explicit business assumptions: cancellations are separate, and past booked records are not inferred to be no-shows. A zero rate is different from an undefined rate or missing coverage. Group totals must divide summed counts, never average clinic/day percentages. Count reconciliation uses completed + no-show + cancelled + booked + other; eligible already includes no-shows.
+
+`last_loaded_at_utc` is the latest successful **full extraction** covering each date, converted to UTC without an offset for reporting. It does not prove outcomes are final or capture every later incremental-only correction to that date. Unresolved status is evaluated when SQL is queried; Power BI Import changes only on refresh. Both SQL Server and loader clocks are assumed correct.
+
+## Report interpretation and deliberate exclusions
+
+Power BI builds on the SQL view. The supplied PBIX has one overview page; capacity prioritisation, baseline comparison and economic scenarios are extensions demonstrated in screenshots and should be saved in the final report if included in the submission. Their design rules are: aggregate rates divide sums; the baseline covers the preceding 28 loaded days, excludes the reporting day, and suppresses the difference when either period has pending outcomes. These are conservative reporting rules, not statistical significance testing. Loaded history is not proof of resolved outcomes. Display freshness, selected dates and missing coverage separately. Published relative date filters use UTC; a production morning report should explicitly define its business timezone.
+
+Scheduled no-show hours do not establish idle time, lost revenue or avoidable salary cost. The economic scenario uses **assumed contribution margin per recovered hour × assumed recovered share × scheduled no-show hours**, less intervention cost. Costs must match selected dates/clinics; break-even share is cost divided by hours times hourly contribution. All scenario amounts use DKK, including Swedish clinics under a common illustrative assumption; no exchange conversion or actual pricing is implemented.
+
+City-name geocoding misplaced clinics. The map is a prototype, not a validated basis for operational decisions; a future clinic-ID/location mapping should use verified coordinates. Prediction, causal explanations, reminder delivery, intervention-effect measurement, actual financial losses and automated business conclusions are outside this slice.
+
+## Validation and what would change at Nordvet
+
+Run `python -m unittest test_loader -v`. The six simulated tests passed during this review with HTTP/ODBC dependency stand-ins; native SQL Server and live API behaviour were not exercised. The tests cover local-date/deletion preservation, incremental query parameters, pagination/duplicate handling, ignored-filter rejection, and simulated commit/rollback. They mock API/database behaviour; they do **not** establish live endpoint completeness, execute SQL Server constraints, or validate DAX/report interactions. Use `verify.sql` for source-category/count checks, and compare SQL totals with the same Power BI date/activity filters. Counts are live, so sample figures are not fixed acceptance criteria.
+
+For Nordvet, reuse existing infrastructure where possible; otherwise propose a daily scheduled Python Azure Function, Azure SQL Database and Power BI Service. Before deployment: replace the local Windows-authentication connection with an appropriate Azure connection/identity, validate database certificates (`TrustServerCertificate=yes` is only the local-demo shortcut), store the API secret securely, configure scheduling/report refresh, and alert on failures/stale coverage. Inspect their Power BI licences and network setup; Microsoft 365 alone does not establish report-sharing entitlement. Assess database, compute and reporting costs against the expected benefit rather than assume a budget.
+
+This implementation has no scheduler, persisted failure log, alerts, history/audit snapshots, deployment automation or production access-control configuration. Those are explicit next steps for an ongoing client service; they are not required to run the local demonstration.
